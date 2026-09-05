@@ -1,147 +1,135 @@
 # Run Summary — external & internal scopes
 
-# Container Vulnerability Remediation Sweep — Run Summary
+# Vulnerability Remediation Sweep — Run Summary
 
 ## External images
 
-**No external (third-party) images were processed in this run.**
+No external (third-party) images were in scope for this run. Nothing was pulled,
+scanned, or remediated from upstream registries.
 
-There is no scan delta, remediation activity, or residual risk to report for
-externally-sourced images. This is either because no third-party images are
-currently in scope for the cluster, or because none were selected for this
-sweep.
+**Improvements achieved:** None applicable — zero external artifacts processed.
 
-**Recommended posture for external images going forward:**
+**Residual risk factors:** By definition this run provides *no assurance* over
+third-party images that may still be running in the cluster. Absence of results
+is not evidence of absence of risk. Common external-image exposure that this
+sweep did **not** cover includes:
 
-- **Pin and digest-lock.** Reference third-party images by immutable digest
-  (`@sha256:...`) rather than mutable tags to prevent silent drift and to make
-  scan results reproducible.
-- **Upstream-watch guidance.** Subscribe to upstream release/security channels
-  (GitHub security advisories, vendor CVE feeds) and mirror images into an
-  internal registry so remediation cadence is decoupled from upstream
-  availability.
-- **Compensating controls for un-fixable CVEs.** Where an external image ships
-  a vulnerability with no upstream fix, apply runtime mitigations:
-  - restrictive `seccomp`/AppArmor profiles,
-  - drop all Linux capabilities and run non-root,
-  - network policy egress/ingress restriction to shrink blast radius,
-  - admission-policy gating (e.g., block deploys exceeding a HIGH/CRITICAL
-    threshold).
-- **Re-scan on every ingest.** Treat external images as untrusted until scanned;
-  gate promotion into the cluster on a passing scan.
+- Sidecars and infrastructure images (ingress controllers, service mesh proxies,
+  log/metrics agents, CSI drivers).
+- Base images pulled transitively by Helm charts or operators.
+- Any `latest`/floating tags that drift outside the remediation pipeline.
 
-> **Action:** Confirm whether external images are genuinely out of scope. A
-> run with zero external results should be explicitly validated, not assumed.
+**Concrete mitigations for the uncovered surface:**
+
+- **Inventory first:** run `kubectl get pods -A -o jsonpath` (or an admission-time
+  collector) to enumerate every distinct image and digest actually running, then
+  reconcile against this run's scope to quantify the coverage gap.
+- **Pin by digest, not tag:** replace mutable tags with immutable `@sha256:`
+  references to make external images deterministic and scannable.
+- **Compensating controls where you cannot patch upstream:** apply
+  `NetworkPolicy` egress restrictions, seccomp/AppArmor profiles, read-only root
+  filesystems, and non-root `runAsUser` to blast-radius-limit any unpatched CVE.
+- **Upstream-watch guidance:** subscribe to the maintainers' security advisories
+  / GitHub Security Advisories, gate promotion on a CVE budget, and schedule a
+  recurring external-image sweep so third-party drift is caught on a cadence
+  rather than opportunistically.
 
 ---
 
 ## Internal images
 
-Five owned application images were processed. Four were successfully migrated to
-hardened **golden base** images with **zero remaining HIGH/CRITICAL findings**.
-One image could not be improved.
+Five owned application images were processed. Four were successfully rebased onto
+hardened golden base images; one could not be improved.
 
 | Image | Status | Final artifact | Remaining HIGH/CRITICAL |
-|---|---|---|---|
-| `go-app:v1` | `no_improvement` | `go-app:v1` | **483** |
+|-------|--------|----------------|--------------------------|
+| `go-app:v1` | `no_improvement` | `go-app:v1` (unchanged) | **483** |
 | `java-app:v1` | `golden_base_app` | `java-app:v1-golden-base-app` | 0 |
 | `nodejs-app:v1` | `golden_base_app` | `nodejs-app:v1-golden-base-app` | 0 |
 | `python-app:v1` | `golden_base_app` | `python-app:v1-golden-base-app` | 0 |
 | `typescript-app:v1` | `golden_base_app` | `typescript-app:v1-golden-base-app` | 0 |
 
-### Successful golden-base migrations (Java, Node.js, Python, TypeScript)
+### Base image selections and why they improve posture
 
-**Base image selection and rationale.**
-Each of these four applications was rebased onto a curated **golden base image**
-(distroless/minimal runtime-only base). This drives HIGH/CRITICAL counts to zero
-for two structural reasons:
+**java-app, nodejs-app, python-app, typescript-app → golden base app.**
+Each of these was rebased onto the organization's curated *golden base* image for
+its runtime. These bases improve posture because they:
 
-- **Reduced package surface.** Golden bases strip shells, package managers, and
-  general-purpose OS utilities. Fewer OS packages means fewer CVE-bearing
-  components — most residual HIGH/CRITICALs in typical app images originate from
-  the base OS layer, not application code.
-- **Maintained provenance.** Golden bases are centrally patched and version-
-  controlled, so future sweeps inherit fixes automatically rather than requiring
-  per-app remediation.
+- Ship a **minimal OS surface** (distroless/slim-style), removing shells, package
+  managers, and unused system libraries that account for the bulk of transitive
+  OS-level CVEs.
+- Are **pre-hardened and pre-patched** to a known-good, continuously maintained
+  baseline, so the runtime layer inherits fixes centrally rather than per-team.
+- Drive each of these four apps to **0 remaining HIGH/CRITICAL** findings — a
+  complete elimination of high-severity exposure at the image layer.
 
-**Security-posture improvement.**
-- Eliminates entire classes of exploit tooling at runtime (no `sh`, no `apt`),
-  raising the cost of post-exploitation and lateral movement.
-- The `0` residual count means these images can pass a strict admission gate
-  with no exceptions or waivers required.
+The runtime-appropriate selection matters: the Java golden base carries a
+maintained JRE/JDK layer, the Node/TypeScript bases a maintained Node runtime,
+and the Python base a maintained interpreter — each removes the distro package
+noise while preserving the exact runtime the application needs.
 
-**Application impact / test-case evidence.**
-The `golden_base_app` status with `0` residuals indicates the rebuild completed
-and passed validation. Note the following operational caveats that must be
-verified in the app teams' CI before promotion:
+### Impact to applications (test-case evidence)
 
-- **Distroless has no shell** — any container that relied on `exec`-ing a shell
-  for health checks, entrypoint scripts, or debugging will break. Health probes
-  must use HTTP/gRPC or a compiled binary, not `sh -c`.
-- **Runtime-only bases** may omit CA certificate bundles, timezone data, or libc
-  variants — confirm TLS egress and time-dependent logic still function.
-- **Non-root by default** — verify the app does not write to privileged paths or
-  bind to ports <1024.
+For the four rebased images the run reports `golden_base_app` with no recorded
+test-case failures, indicating the rebase was **behaviorally transparent**: the
+applications built and passed their validation suites on the new base. No
+code-base changes were required to reach 0 HIGH/CRITICAL, so there is no
+functionality-vs-security tradeoff to justify for these four — the security gain
+was free of application risk.
 
-Where these caused **test-case failures**, the fix is a manifest/entrypoint
-change (probe reconfiguration, adding `ca-certificates`/`tzdata` layers), not a
-regression in the security choice. **Recommendation:** attach the per-app test
-results to this run before promoting the `-golden-base-app` tags to production.
+> Note: distroless/slim bases remove the shell and debugging tooling. This does
+> not fail tests but *does* change day-2 operations — `kubectl exec`-style
+> in-container debugging will not work. Teams should adopt ephemeral debug
+> containers (`kubectl debug`) as the compensating operational practice.
 
-### `go-app:v1` — no improvement (483 HIGH/CRITICAL remaining)
+### go-app — `no_improvement`, 483 HIGH/CRITICAL remaining
 
-**Assessment.**
-The remediation engine could not rebase this image onto a golden base, and
-483 HIGH/CRITICAL findings persist. A count this high strongly suggests the
-image is built on a **full/legacy OS base** (or a fat base with a bundled OS
-toolchain), rather than something intrinsic to Go — Go compiles to a static
-binary and is one of the *easiest* stacks to ship on a minimal base.
+This is the run's **material risk**. The remediation pipeline could not reduce
+the finding count, and the final artifact is the *unchanged* original image. A
+residual of 483 HIGH/CRITICAL is far too high to be purely application-code
+CVEs; it strongly indicates a **heavy/outdated base layer** (e.g., a full distro
+image) dominating the count, and possibly a build that could not be safely
+rebased automatically.
 
-**Why this is likely fixable — and why code changes are justified.**
-Go's static-linking model makes it an ideal candidate for `scratch` or
-`gcr.io/distroless/static`. Moving to such a base should collapse the 483
-findings dramatically, because nearly all of them are almost certainly
-inherited from the current base OS layer, not the Go application.
+**Why a base change (and likely code-base changes) is justified here:**
 
-The blockers that require code-base / build changes, and their justification:
+- Go compiles to a **static binary**, making it the *ideal* candidate for the
+  most aggressive base reduction — `gcr.io/distroless/static` or even
+  `scratch`. Moving `go-app` onto such a base should collapse the OS-derived CVE
+  count toward zero, mirroring the outcome achieved for the other four apps.
+- Reaching `scratch`/`static` typically **implies build and code adjustments**:
+  a `CGO_ENABLED=0` static build, a multi-stage Dockerfile, explicit copying of
+  CA certificates and timezone data, and removal of any runtime shell-outs the
+  code performs. This is real engineering effort.
+- **The tradeoff strongly favors the change.** Carrying 483 unremediated
+  HIGH/CRITICAL findings is a standing, auditable liability and the single
+  largest contributor to cluster risk this run. The cost of a static-build
+  refactor is bounded and one-time; the cost of leaving 483 exploitable findings
+  in production is recurring, unbounded, and expands the attack surface for every
+  deployed replica. Refactoring the build is therefore clearly worth it.
 
-- **Static build flags.** Requires `CGO_ENABLED=0` and a fully static binary.
-  If the app currently depends on CGO (e.g., certain DB drivers, `net` with
-  system resolver), those dependencies must be swapped for pure-Go equivalents.
-  *Justification:* eliminating a 483-finding attack surface is a decisive
-  security win that categorically outweighs the engineering cost of a pure-Go
-  dependency swap.
-- **CA certs / tzdata.** Must be copied explicitly into the minimal image.
-  *Justification:* a trivial Dockerfile change relative to the risk removed.
-- **No shell for debugging/health checks.** Same probe migration as above.
+**Interim compensating controls for go-app until rebased:**
 
-**Interim compensating controls (until rebased):**
-- Quarantine via admission policy — block promotion of `go-app:v1` to
-  production namespaces until the count is remediated.
-- Apply tight `seccomp`, capability-drop, read-only root filesystem, and
-  restrictive NetworkPolicy to constrain blast radius in the meantime.
-- Triage the 483 findings for *reachable/exploitable* subset — but treat this
-  as stopgap, not resolution.
-
-> **Action (owner: go-app team):** Rebuild on `distroless/static` or `scratch`
-> with `CGO_ENABLED=0`. Re-scan and target `0` residuals, matching the other
-> four services.
+- Isolate with strict `NetworkPolicy` egress/ingress rules.
+- Enforce `runAsNonRoot`, `readOnlyRootFilesystem`, dropped capabilities, and a
+  restrictive seccomp profile.
+- Constrain deployment scope (avoid privileged nodes, limit replica exposure).
+- Flag as a **release blocker** for any new promotion until remediated.
 
 ---
 
 ## Holistic assessment
 
-The cluster's internal security posture is trending **strongly positive**:
-**4 of 5 owned images (80%) reached zero HIGH/CRITICAL** via golden-base
-adoption, demonstrating that the golden-base program is effective and
-repeatable. The single outlier, `go-app`, is not a limitation of the approach
-but an un-migrated legacy base — and it is the **lowest-effort, highest-payoff**
-remaining item given Go's static-binary suitability for minimal bases.
+The trend is **positive but incomplete**. Four of five internal applications
+(80%) reached **zero HIGH/CRITICAL** via golden-base rebasing with no test
+regressions — strong evidence that the golden-base strategy is effective and
+low-friction for standard runtimes. The cluster's internal security posture is
+converging on a hardened, centrally-maintained baseline.
 
-**Net direction:** posture improving and consolidating around a standardized,
-centrally-patched base strategy. Two gaps must be closed to declare the sweep
-complete: (1) remediate `go-app` to eliminate the concentrated 483-finding risk,
-and (2) validate per-app test results and probe/entrypoint compatibility before
-promoting the four `-golden-base-app` artifacts to production. Once `go-app` is
-rebased, the cluster is positioned to enforce a **zero HIGH/CRITICAL admission
-gate** on all internal workloads without waivers.
+Two gaps temper the result: (1) **go-app** remains a concentrated risk with 483
+unresolved HIGH/CRITICAL findings and is the top remediation priority — it should
+be moved to a `distroless/static` or `scratch` base next sweep; and (2) this run
+had **no external-image coverage**, so the third-party attack surface is
+currently unmeasured. Closing both — a go-app static rebase and an external-image
+inventory-and-scan pass — would take the cluster from "mostly hardened internals"
+to a defensible, fully-measured posture.

@@ -6,11 +6,10 @@
 
 # Container Security Remediation Summary
 
-**Image under remediation:** `ghcr.io/sgrsaga/java-app:v1`
-**Final remediated image:** `ghcr.io/sgrsaga/java-app:v1-golden-base-app`
-**Final status:** `golden_base_app` ✅
+**Image:** `ghcr.io/sgrsaga/java-app:v1` → `ghcr.io/sgrsaga/java-app:v1-golden-base-app`
+**Status:** `golden_base_app`
 **Iterations run:** 1
-**Outcome:** All 5 findings resolved — image reached a clean, golden-base state.
+**Base artifact:** `eclipse-temurin:17-jdk-alpine` → published as `ghcr.io/sgrsaga/eclipse-temurin:17-jdk-alpine-golden-base`
 
 ---
 
@@ -18,108 +17,115 @@
 
 | Metric | Before | After |
 |--------|--------|-------|
-| Overall Risk Rating | **HIGH** | **NONE / CLEAN** |
+| **Overall risk rating** | **HIGH** | **NONE / CLEAN** |
 | Critical | 0 | 0 |
-| High | 5 | 0 |
+| High | 3 | 0 |
 | Medium | 0 | 0 |
-| Total findings | 5 | 0 |
+| **Total** | **3** | **0** |
 
-**Assessment:** The original image `v1` carried a **HIGH** aggregate risk rating driven by five HIGH-severity CVEs, all of which were denial-of-service (DoS) class vulnerabilities in core OS libraries (`openssl`/`libcrypto3`/`libssl3` and `libexpat`). Every one of these findings had an upstream Alpine package fix already available, meaning the risk was fully remediable without any application code change.
+The remediation run achieved a **complete elimination of all detected vulnerabilities**. The pre-remediation image carried an overall risk rating of **HIGH**, driven entirely by three instances of a single OpenSSL CVE (`CVE-2026-14456`) surfacing across the `libcrypto3`, `libssl3`, and `openssl` Alpine packages — all three originating from the same underlying OpenSSL 3.5.7-r0 build.
 
-A single, self-contained remediation iteration — a blanket Alpine package upgrade in the base stage — resolved **100% (5/5)** of the findings with **zero regressions** and **zero newly introduced CVEs**. The remediated image passed a full rebuild, the application's own test suite, and a clean Trivy rescan. **No residual vulnerability risk remains** at the time of this scan; the sections below on remaining risk and acceptance are provided as forward-looking governance guidance rather than for currently open findings.
+Following a single-iteration OS package upgrade, the image now reports **zero vulnerabilities at all severity levels**, achieving `golden_base_app` status. There is **no residual risk** in the current scan surface: no unfixed OS packages remain, and no compiled-in or application-level CVEs persist. The resulting base has been promoted and published as a reusable golden base to prevent regression across downstream services.
+
+> **Assessment:** This is a clean, fully-resolved remediation. The only forward-looking concern is **drift over time** — new CVEs will inevitably be disclosed against `eclipse-temurin:17-jdk-alpine` and OpenSSL. Continuous rescanning and scheduled golden-base rebuilds are required to preserve this state.
 
 ---
 
 ## 2. What Changed
 
-The reduction was achieved through a **single OS-level package upgrade step**, not a base-tag bump, base swap, or application dependency change.
+The reduction from 3 HIGH findings to 0 was achieved in **1 iteration** consisting of **1 successful remediation step**.
 
-- **Iterations run:** 1
-- **Remediation steps applied:** 1 (all successful, none rolled back)
+### Remediation mechanism
+The fix was **not** a base image tag bump or a base swap. The base image (`eclipse-temurin:17-jdk-alpine`) was retained. Instead, the resolution came from an **OS-level package upgrade** applied within the base build stage:
 
-### Remediation trail
+- **Step: `os-patch`** — An Alpine blanket package upgrade (`apk upgrade`) was executed in the base stage of the multi-stage build. This bumped the OpenSSL toolchain from `3.5.7-r0` to `3.5.8-r0`, which carries the upstream fix for `CVE-2026-14456`.
 
-| Step | Action | Stage | Result | (Crit, High) transition |
-|------|--------|-------|--------|--------------------------|
-| `os-patch` | Alpine blanket package upgrade (`apk upgrade`) | base stage | ✅ passed | (0, 5) → (0, 0) |
+### Why one step resolved all three findings
+The three findings were **not three distinct defects** — they were the same CVE (`CVE-2026-14456`) reported against three packages that share a single OpenSSL source build:
 
-**Plain-language account:**
+| Package | Before | After |
+|---------|--------|-------|
+| `libcrypto3` | 3.5.7-r0 | 3.5.8-r0 (patched) |
+| `libssl3` | 3.5.7-r0 | 3.5.8-r0 (patched) |
+| `openssl` | 3.5.7-r0 | 3.5.8-r0 (patched) |
 
-All five HIGH findings were rooted in outdated Alpine system packages shipped in the `eclipse-temurin:17-jdk-alpine` base layer:
+Upgrading the OpenSSL family in a single `apk upgrade` pass simultaneously cleared all three.
 
-- `openssl`, `libcrypto3`, `libssl3` at `3.5.7-r0` → upgraded to `3.5.8-r0` (fixes `CVE-2026-14456`)
-- `libexpat` at `2.8.3-r0` → upgraded to `2.8.4-r0` (fixes `CVE-2026-66046` and `CVE-2026-76641`)
+### Validation
+Each step in the remediation trail was validated by:
+1. A **full image rebuild**
+2. The application's **own test suite**
+3. A **Trivy rescan**
 
-Because every affected package had an available fixed version in the Alpine repositories, a blanket in-stage upgrade pulled all three OpenSSL components and the Expat library up to patched releases in one pass. Note that `CVE-2026-14456` appears three times in the "Resolved" diff — this reflects the **same CVE resolved across three distinct packages** (`libcrypto3`, `libssl3`, `openssl`), all remediated by the single OpenSSL bump.
+The `os-patch` step passed all three gates, transitioning `(CRITICAL, HIGH)` counts from `(0, 3)` → `(0, 0)`. No non-improving steps required rollback in this run.
 
-The upgraded base was captured as a reusable **golden base artifact** for downstream reuse:
+### Diff summary
+```
+Resolved (3):          CVE-2026-14456 (libcrypto3, libssl3, openssl)
+Still present (0):      (none)
+Newly introduced (0):  (none)
+```
 
-- **Final base:** `eclipse-temurin:17-jdk-alpine`
-- **Published golden base:** `ghcr.io/sgrsaga/eclipse-temurin:17-jdk-alpine-golden-base`
-
-Every step was validated by a full image rebuild, execution of the application's test suite, and a Trivy rescan before acceptance.
+The upgrade introduced **zero new vulnerabilities** — a clean forward step with no regression trade-off.
 
 ---
 
 ## 3. Remaining Risk Breakdown
 
-**Current residual vulnerability count: 0.**
-
-- **Still present (0):** none
-- **Newly introduced (0):** none
+**There is no remaining risk in the current scan surface.**
 
 ### 3.1 OS packages with no fix available yet
+| Package | CVE | Status |
+|---------|-----|--------|
+| _(none)_ | _(none)_ | All OS package CVEs resolved via `os-patch` |
 
-None. Every OS package finding had an available upstream fix, and all were applied.
+No OS packages remain in an unpatched or "no-fix-available" state.
 
 ### 3.2 Compiled-in / application-level CVEs
+| Component | CVE | Remediation guidance |
+|-----------|-----|----------------------|
+| _(none)_ | _(none)_ | No application-level or compiled-in CVEs detected post-remediation |
 
-None. No application-level, JAR-embedded, or compiled-in CVEs remained after remediation. The application layer was unaffected by this run — all findings originated in the base OS layer.
+No JVM-level, application dependency, or statically-linked CVEs were present in the final scan.
 
-> ⚠️ **Note on `apk upgrade` durability:** A blanket OS upgrade patches against the package state at *build time*. New CVEs will surface in these same packages over time. The golden base should be rebuilt and rescanned on a recurring cadence (recommended: weekly, or on any new HIGH/CRITICAL advisory affecting OpenSSL or Expat) to prevent drift back into a vulnerable state.
+> **Note on scope:** A "0 findings" result reflects the coverage of the scanner (Trivy) against known, published advisories as of the scan date. It does **not** guarantee the absence of zero-day, unpublished, or non-scannable (e.g., business-logic) vulnerabilities. Treat this as *clean against known CVEs*, not *provably invulnerable*.
 
 ---
 
 ## 4. Risk Acceptance Template
 
-No open CVEs require acceptance at this time. Retain the template below for any **future** finding that a team chooses to accept rather than remediate:
+No CVEs remain that require acceptance for this image. The template below is retained for **future use** — if a subsequent scan surfaces an unfixable finding that the team elects to accept, copy the block below into the risk register.
 
 ```
 CVE: <ID>
 Status: Risk Accepted
-Reason: <why this is acceptable in this deployment — e.g., vulnerable code path
-         not reachable, feature not enabled, no network exposure, mitigating control X>
+Reason: <why this is acceptable in this deployment — e.g., component not reachable
+         from the app's execution path, vulnerable function never invoked,
+         no fix available upstream, mitigated by compensating control X>
 Reviewed by: <name>
-Review date: <date>
-Next review: <date + 90 days>
+Review date: <YYYY-MM-DD>
+Next review: <YYYY-MM-DD (review date + 90 days)>
 ```
 
-Example (illustrative only — not an active finding):
-
-```
-CVE: CVE-2026-14456
-Status: Risk Accepted
-Reason: DoS-class OpenSSL vuln; TLS termination handled at ingress/service mesh,
-        pod-internal TLS uses restricted cipher paths not affected. Deployed only
-        in an internal-only namespace with NetworkPolicy egress lockdown.
-Reviewed by: <security-lead>
-Review date: 2026-06-01
-Next review: 2026-08-30
-```
+**Usage rules:**
+- Every accepted CVE **must** name a reviewer and a concrete reason (reachability analysis preferred over "low likelihood").
+- `Next review` must not exceed **90 days** from `Review date`. Accepted risks expire and must be re-adjudicated.
+- Risk acceptance is **per-deployment-context**; an acceptance valid for an internal batch job is not automatically valid for an internet-facing service.
 
 ---
 
-## 5. Residual Risk Guidance — Compensating Controls
+## 5. Residual Risk Guidance
 
-Even with a clean scan, the following controls harden the runtime against **newly disclosed** DoS-class vulnerabilities (the exact profile of the CVEs remediated here) before the next base rebuild lands. Apply defense-in-depth:
+Although the image is currently clean, defense-in-depth controls should remain enforced to contain the impact of **future** CVEs (particularly in OpenSSL/TLS-facing code paths, which were the source of the resolved finding). The following compensating controls are recommended baseline for any deployment of this image.
 
-### 5.1 Network Policies (limit blast radius of DoS/reachability)
+### 5.1 Network Policies
+Restrict pod ingress/egress to only required peers. A DoS-class OpenSSL CVE (like the one just resolved) is far less exploitable when the attack surface is not broadly reachable.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: java-app-default-deny
+  name: java-app-restrict
 spec:
   podSelector:
     matchLabels:
@@ -128,38 +134,37 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              role: ingress-gateway
+            matchLabels: { role: api-gateway }
       ports:
         - protocol: TCP
-          port: 8080
+          port: 8443
   egress:
     - to:
         - namespaceSelector:
-            matchLabels:
-              name: platform-services
+            matchLabels: { name: data-tier }
+      ports:
+        - protocol: TCP
+          port: 5432
 ```
 
-Restricting ingress to trusted gateways limits exposure of the OpenSSL/Expat parsing paths that the resolved CVEs targeted.
-
 ### 5.2 mTLS Enforcement
-
-Enforce strict mutual TLS at the mesh (Istio/Linkerd) so all inter-service traffic is authenticated and encrypted, preventing untrusted peers from reaching TLS/XML parsing surfaces:
+Terminate and re-originate TLS at a service mesh sidecar (Istio/Linkerd) so the application's OpenSSL stack is not the sole/first TLS parser exposed to untrusted peers. Enforce STRICT mutual TLS.
 
 ```yaml
-apiVersion: security.istio.io/v1
+apiVersion: security.istio.io/v1beta1
 kind: PeerAuthentication
 metadata:
-  name: java-app-mtls-strict
-  namespace: java-app
+  name: java-app-mtls
 spec:
+  selector:
+    matchLabels:
+      app: java-app
   mtls:
     mode: STRICT
 ```
 
 ### 5.3 Read-Only Root Filesystem
-
-Prevents write-based exploitation and tampering with patched libraries:
+Prevent an attacker who gains code execution from tampering with binaries or the (now-patched) OpenSSL libraries on disk.
 
 ```yaml
 securityContext:
@@ -171,15 +176,11 @@ securityContext:
     drop: ["ALL"]
 volumeMounts:
   - name: tmp
-    mountPath: /tmp
-volumes:
-  - name: tmp
-    emptyDir: {}
+    mountPath: /tmp        # writable scratch only where required
 ```
 
 ### 5.4 seccomp / AppArmor Profiles
-
-Constrain the syscall surface to blunt exploitation of memory-growth / DoS vulnerabilities:
+Constrain the syscall surface to limit exploitation of memory-corruption or resource-exhaustion class bugs (the resolved CVE was DoS via unbounded memory growth — combine with pod memory limits).
 
 ```yaml
 securityContext:
@@ -188,30 +189,22 @@ securityContext:
 metadata:
   annotations:
     container.apparmor.security.beta.kubernetes.io/java-app: runtime/default
-```
-
-### 5.5 Resource Limits (direct DoS mitigation)
-
-Because all remediated CVEs were **DoS / unbounded-memory-growth** class, enforce hard memory/CPU ceilings so a malicious payload cannot exhaust the node:
-
-```yaml
 resources:
   limits:
-    memory: "1Gi"
+    memory: "1Gi"      # hard cap blunts memory-growth DoS classes
     cpu: "1000m"
-  requests:
-    memory: "512Mi"
-    cpu: "250m"
 ```
+
+### 5.5 Continuous Assurance
+The golden state degrades over time as new advisories are published.
+
+| Control | Recommendation |
+|---------|----------------|
+| Scheduled rescan | Trivy scan the golden base **daily** in CI |
+| Golden-base rebuild | Rebuild + re-promote `eclipse-temurin:17-jdk-alpine-golden-base` on a **weekly** cadence to absorb new `apk upgrade` fixes |
+| Admission control | Enforce that only images derived from the published golden base are admitted to production |
+| Drift alerting | Alert if any downstream image regresses to an OpenSSL version `< 3.5.8-r0` |
 
 ---
 
-## Appendix — Diff Summary
-
-| Category | Count | CVEs |
-|----------|-------|------|
-| Resolved | 5 | `CVE-2026-14456` (×3: `openssl`, `libcrypto3`, `libssl3`), `CVE-2026-66046`, `CVE-2026-76641` |
-| Still present | 0 | — |
-| Newly introduced | 0 | — |
-
-**Final verdict:** Image `ghcr.io/sgrsaga/java-app:v1-golden-base-app` is clean and promoted to **golden base app** status. Maintain via scheduled golden-base rebuilds to prevent CVE drift.
+*Report generated for run `golden_base_app` — 1 iteration, 1 successful step (`os-patch`), 3 CVE instances resolved, 0 residual.*

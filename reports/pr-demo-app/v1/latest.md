@@ -1,181 +1,232 @@
 # Remediation Summary
 
 > Original image: `ghcr.io/sgrsaga/pr-demo-app:v1`
-> Final image: `ghcr.io/sgrsaga/pr-demo-app:v1-golden-base-app`
-> Status: `golden_base_app`
+> Final image: `ghcr.io/sgrsaga/pr-demo-app:v1-optimized-app`
+> Status: `optimized_app`
 
-# Container Security Remediation Report
+# Container Security Remediation Summary
 
 **Image:** `ghcr.io/sgrsaga/pr-demo-app`
-**Original tag:** `v1`
-**Remediated tag:** `v1-golden-base-app`
-**Run status:** `golden_base_app`
-**Iterations:** 1 (multi-step base-selection trail)
+**Original tag:** `v1` → **Final tag:** `v1-optimized-app`
+**Status:** `optimized_app` · **Iterations:** 1 · **Final base:** `registry.access.redhat.com/ubi9/python-311`
 
 ---
 
 ## 1. Executive Summary
 
-| Metric | Before | After | Change |
-|--------|--------|-------|--------|
-| **CRITICAL** | 22 | 0 | −22 (−100%) |
-| **HIGH** | 1718 | 0 | −1718 (−100%) |
-| **TOTAL** | 1740 | 0 | −1740 (−100%) |
-| **Overall Risk Rating** | 🔴 **Critical** | 🟢 **Clean** | Fully remediated |
+| Metric | Before (`v1`) | After (`v1-optimized-app`) | Δ |
+|--------|--------------:|---------------------------:|---:|
+| **CRITICAL** | 22 | **0** | −22 (−100%) |
+| **HIGH** | 1,718 | **93** | −1,625 (−94.6%) |
+| **Total** | 1,740 | **93** | −1,647 (−94.7%) |
 
-**Assessment:** The image moved from a **Critical** risk posture — driven overwhelmingly by a stale Debian 12 base (`linux-libc-dev` 6.1.38-4 alone accounted for the vast majority of the 1718 HIGH findings) plus outdated OpenSSL, GnuTLS, krb5, expat, Python `perl-base`, and toolchain packages — to a **fully clean** scan with **zero** CRITICAL or HIGH vulnerabilities. The decisive move was **not** patching-in-place (which plateaued) but a **structural rebuild** onto a minimal, continuously-maintained distroless base image (`cgr.dev/chainguard/python:latest-dev`) using a multi-stage build. This eliminated the entire kernel-headers CVE class (which is noise for a non-kernel userland container but inflates scanner counts) and every OS-level finding in one step.
+**Overall risk rating: `CRITICAL` → `MODERATE`.**
 
-**What remains:** Nothing at CRITICAL/HIGH severity in the final scan. However, because the golden base is a *rolling* tag (`latest-dev`), residual risk is now **operational** (base drift over time) rather than **inventory** (vulnerable packages present today). See §5.
+The original Debian 12–based image carried an unmaintained/frozen `linux-libc-dev` (6.1.38-4) and a large Debian userland that together accounted for the overwhelming majority (~1,600+) of findings — including 22 CRITICALs spanning OpenSSL heap overflows, krb5 token handling, expat integer overflows, and perl regex/archive flaws. Remediation **eliminated every CRITICAL** and reduced HIGH findings by ~95%, primarily by **swapping the base image** from Debian to Red Hat UBI9 and applying the vendor's cumulative patch stream.
+
+**What remains** is genuinely residual: 93 HIGH findings, of which the large bulk are `kernel-headers` entries (build/compile-time artifacts, generally *not runtime-reachable*), plus a small set of `curl`, `libpng`, `mariadb-connector-c`, `vim`, `setuptools`, and `wheel` CVEs — most of which currently have **NO FIX** available from the vendor. There are **zero CRITICALs** and no exploitable-at-runtime remote code execution paths that are both reachable and unpatched in the application's actual runtime surface. Residual risk is manageable through package pruning and compensating controls.
+
+> ⚠️ **Note on `NO FIX` counts:** the base swap traded a Debian LTS kernel-headers package (many *fixed* versions available but not yet applied) for a UBI9 `kernel-headers` package where the equivalent CVEs show `NO FIX` in the current advisory feed. This is an artifact of RHEL's backporting/advisory cadence, not a regression in actual exposure — see §3.
 
 ---
 
 ## 2. What Changed
 
-The reduction was achieved in **three effective steps** (plus one no-op and one failed experiment that were rolled back but retained for adjudication):
+The reduction was achieved in a **single remediation iteration** composed of several validated steps. Each step was gated on a **full rebuild + application test suite + Trivy rescan**; non-improving or failing steps were rolled back but retained for adjudication.
 
-| Step | Technique | Result | (CRIT, HIGH) |
-|------|-----------|--------|--------------|
-| 1 | **OS package upgrade** — Debian blanket `apt upgrade` in base stage | ✅ Applied | (22, 1718) → (6, 273) |
-| 2 | OS package upgrade (repeat) | ⏸️ No improvement — rolled back | (6, 273) → (6, 273) |
-| 3 | **Base swap** to `cgr.dev/chainguard/python:latest-dev` (single-stage) | ❌ Build/test failed (`pytest: not found` — PATH/test-dep issue) | rolled back |
-| 4 | **Restructure** — multi-stage: builder `python:3.11.4-slim` + runtime `cgr.dev/chainguard/python:latest-dev` | ✅ Applied | (6, 273) → **(0, 0)** |
+### Step-by-step trail
 
-**Plain-language narrative:**
+| # | Step type | Action | Result | (C,H) |
+|---|-----------|--------|--------|-------|
+| 1 | `os-patch` | Debian blanket upgrade (base stage) | ✅ passed | (22,1718) → (6,273) |
+| 2 | `os-patch` | Debian blanket upgrade (repeat) | ⏹ no improvement | (6,273) → (6,273) |
+| 3 | `llm-base` | `cgr.dev/chainguard/python:latest-dev` | ❌ tests failed (`pytest: not found`) | — |
+| 4 | `restructure` | builder `python:3.11.4-slim` + Chainguard runtime | ❌ runtime smoke failed (exit 1) | — |
+| 5 | `llm-base` | `gcr.io/distroless/python3-debian12` | ❌ no `/bin/sh` in test target | — |
+| 6 | `restructure` | slim builder + distroless runtime | ❌ `ModuleNotFoundError: flask` | — |
+| 7 | `llm-base` | **`registry.access.redhat.com/ubi9/python-311`** | ✅ **passed** | (6,273) → (0,224) |
+| 8 | `os-patch` | **RedHat blanket upgrade (base stage)** | ✅ **passed** | (0,224) → **(0,93)** |
+| 9 | `os-patch` | RedHat blanket upgrade (repeat) | ⏹ no improvement | (0,93) → (0,93) |
+| 10 | `llm-base` | `python:3.12-alpine` | ❌ perms (`/.local` denied) | — |
+| 11 | `llm-base` | `registry.suse.com/bci/python:3.11` | ❌ perms (`/.local` denied) | — |
+| 12 | `llm-base` | `mcr.microsoft.com/devcontainers/python:3.11-bookworm` | ❌ perms (`/.local` denied) | — |
+| 13 | `dep-bump#1` | `setuptools==78.1.1` (transitive) | ⏹ no improvement | (0,93) → (0,93) |
 
-1. **Patch-in-place first.** A Debian blanket upgrade knocked out ~85% of findings immediately (kernel-header CVEs with published fix versions, OpenSSL, GnuTLS, krb5, expat, glibc, etc.). A second upgrade pass produced no further gain — the remaining 6 CRITICAL / 273 HIGH were pinned to a Debian base that had **no upstream fixes available** for those specific CVEs.
+### Plain-language account
 
-2. **Base swap attempt.** A naive single-stage swap to Chainguard failed CI because the distroless runtime lacked the test tooling on `PATH` — a valid guardrail catch, not a security regression.
+1. **Initial Debian OS patch** knocked out most of the low-hanging userland CVEs (Debian `deb12uN` security updates for OpenSSL, gnutls, krb5, expat, glibc, pam, etc.), taking CRITICAL 22→6 and HIGH 1718→273. A second patch pass yielded nothing further — Debian was at its patch ceiling, still carrying the frozen kernel-headers and no-fix packages.
+2. **Base-image swap was the decisive move.** Several minimal bases (Chainguard, distroless, Alpine, SUSE BCI, MS devcontainer) were attempted and **rejected by the test/smoke gates** — they lacked a shell, `pytest`, or write access to install app deps, or the compiled artifacts wouldn't load. **UBI9 (`ubi9/python-311`)** built cleanly, passed the full test suite, and dropped CRITICAL 6→0.
+3. **RedHat blanket OS upgrade** on the UBI9 base then applied Red Hat's cumulative RHSA stream, cutting HIGH 224→93.
+4. A final **transitive `setuptools` bump** was attempted but produced no additional reduction and was retained only as an adjudication candidate.
 
-3. **Restructure to the win.** A **multi-stage build** (fat `python:3.11.4-slim` builder for compilation/tests, minimal Chainguard runtime for the final artifact) resolved the build/test failure *and* dropped the scan to **zero**. Chainguard images ship a minimal, hardened, continuously-rebuilt package set — the entire `linux-libc-dev` header package (source of nearly all HIGH findings) simply does not exist in the runtime layer, and remaining userland libs are current.
-
-**Net:** 1740 findings resolved, 0 still present, 0 newly introduced. Every applied step was validated by full rebuild + application test suite + Trivy rescan.
+**Adjudication outcome:** The balanced pick is the **UBI9 + RedHat-patched** artifact (0 CRITICAL / 93 HIGH, tests passing). The 0/0 Chainguard candidate was rejected because its image is **non-functional at runtime** (smoke exit 1) — zero counts on a broken image are meaningless.
 
 ---
 
 ## 3. Remaining Risk Breakdown
 
-**Final scan: 0 CRITICAL / 0 HIGH.** There are **no vulnerabilities with fixes-unavailable remaining in the shipped image.**
+93 HIGH findings remain, 0 CRITICAL. They fall into two categories.
 
-This is worth stating precisely, because the *pre-remediation* inventory contained two important classes that a reviewer should understand were **eliminated by base replacement, not by patching**:
+### 3a. OS / distro packages with **NO FIX** currently available
 
-### 3a. OS packages that had NO FIX in the original Debian base (now gone)
+These are UBI9 packages where Red Hat has not yet published a fixed build. Most are **`kernel-headers`** — a package containing kernel UAPI headers used only at **build/compile time**. `kernel-headers` ships **no executable kernel code**; the CVEs describe flaws in the *running kernel*, which is provided by the **host**, not this container. These are **not runtime-exploitable from inside the container** and should be triaged as low-actual-risk.
 
-In the original image these were unfixable in-place and would have blocked a patch-only strategy. They are resolved because the packages are **absent or replaced** in the Chainguard runtime:
+| Package | Example CVEs | Nature | Guidance |
+|---------|-------------|--------|----------|
+| `kernel-headers` (5.14.0-687.44.1.el9_8) | CVE-2023-52922, CVE-2024-53141, CVE-2026-43114, CVE-2026-53398/53399, CVE-2026-63886/63887/63888, CVE-2026-64009/64017/64018, CVE-2026-64276/64277, CVE-2026-63993/63994, +~50 more | Build-time UAPI headers; not reachable at runtime | **Remove `kernel-headers` from the final runtime stage** (see §5). Kernel is host-owned; patch the *host* kernel via node OS lifecycle. |
+| `curl-minimal` / `libcurl-minimal` / `libcurl-devel` (7.76.1-40.el9_8.5) | CVE-2026-11352 (QUIC DoS), CVE-2026-11586 (WebSocket PING flood DoS), CVE-2026-8925 (SASL double-free) | Runtime library if `curl` is used | If curl is **not** needed at runtime, drop `curl-minimal`/`libcurl*`. Otherwise pin to a patched UBI9 build when RHSA is published. All three are DoS/double-free, not confirmed RCE. |
+| `libpng` / `libpng-devel` (1.6.37-15.el9_8.2) | CVE-2026-22020 | Image decoding library | Remove if the app performs no PNG processing; else await UBI9 update. |
+| `mariadb-connector-c*` (3.2.6-1.el9_0) | CVE-2026-44172 (SQL injection via improper escaping) | DB client library | **Reachable only if the app connects to MariaDB/MySQL.** If unused, remove the connector. If used, apply server-side prepared statements / parameterized queries and await patched connector. |
+| `vim-minimal` / `vim-filesystem` (8.2.2637-26.el9_8.13) | CVE-2026-47162, CVE-2026-55895, CVE-2026-57456 (code exec via crafted files/docstrings) | Editor — **not needed in production images** | **Remove `vim-minimal` entirely** from the runtime image. Requires a local user opening a malicious file; irrelevant to a service container. |
 
-| Example CVE | Package | Original Fix Status | Resolution |
-|-------------|---------|--------------------|------------|
-| `CVE-2023-45853` | `zlib1g` | NO FIX | Package replaced in golden base |
-| `CVE-2025-7458`, `CVE-2026-11822`, `CVE-2026-11824` | `libsqlite3-0` | NO FIX | Not present in runtime |
-| `CVE-2026-13221`, `CVE-2026-8376`, `CVE-2026-42496`, `CVE-2026-9538`, `CVE-2026-48962` | `perl-base` | NO FIX | Perl not shipped in runtime |
-| `CVE-2025-69720` | `ncurses*` | NO FIX | Not present in runtime |
-| `CVE-2026-53613`, `CVE-2026-76642`, `CVE-2026-78408/9/10` | `util-linux` family | NO FIX | Not present in runtime |
-| `CVE-2026-41992` | `gzip` | NO FIX | Not present / replaced |
-| `CVE-2026-54369` | `libacl1` | NO FIX | Not present / replaced |
-| `CVE-2016742` | `systemd`/`libudev1` | NO FIX | No systemd in distroless runtime |
-| ~hundreds of | `linux-libc-dev` (kernel headers) | NO FIX for many | Header package absent in runtime |
+> `linux-libc-dev` (the Debian kernel-headers equivalent, source of ~1,300 of the original findings) is **fully gone** post-swap.
 
-> ⚠️ **Important nuance:** A large number of the `linux-libc-dev` findings are **kernel header** CVEs. A userland container **does not run its own kernel** — it uses the host's. These findings are *scanner inventory artifacts* and were never runtime-exploitable from inside this container. Removing the package (via the minimal base) is the correct hygiene fix and also silences the false noise.
+### 3b. Application / dependency-level CVEs (fixable only by upstream release or code change)
 
-### 3b. Application / compiled-in CVEs
+| Package | CVE | Fix Version | Guidance |
+|---------|-----|-------------|----------|
+| `setuptools` | CVE-2024-6345 | 70.0.0 | RCE via download functions. **Pin `setuptools>=78.1.1`** in the build stage; the transitive bump did not take effect at runtime — ensure it is installed in the *final* environment, not just the builder. |
+| `setuptools` | CVE-2025-47273 | 78.1.1 | Path traversal in `PackageIndex`. Same fix (`>=78.1.1`). Confirm the runtime venv actually contains the upgraded version (`pip show setuptools`). |
 
-The original image carried Python-ecosystem findings that required dependency upgrades:
-
-| CVE | Component | Original Fix | Guidance (already applied) |
-|-----|-----------|-------------|---------------------------|
-| `CVE-2024-6345` | `setuptools` | 70.0.0 | Pin `setuptools>=78.1.1` |
-| `CVE-2025-47273` | `setuptools` | 78.1.1 | Pin `setuptools>=78.1.1` |
-| `CVE-2026-24049` | `wheel` | 0.46.2 | Pin `wheel>=0.46.2` |
-
-**These are resolved.** Going forward, keep these pins in `requirements.txt`/`constraints.txt` so a future base with older build tooling cannot silently reintroduce them.
+> **Action:** setuptools/wheel are build-time tooling. If they are present in the *runtime* image, remove them (they are not needed to run a Flask app) — this eliminates both CVEs without a version bump. `CVE-2026-24049` (wheel) was resolved by the base swap.
 
 ---
 
 ## 4. Risk Acceptance Template
 
-No CVEs currently require acceptance (scan is clean). Retain this template for any future finding that lacks an upstream fix at the next rescan:
+For any remaining CVE a team elects to formally accept, use one entry per CVE:
 
 ```
-CVE: <ID>
+CVE: CVE-2023-52922
 Status: Risk Accepted
-Reason: <e.g. kernel-header CVE not reachable in userland container / no upstream
-         fix available / component not invoked at runtime / mitigated by control X>
-Component: <package@version>
-Severity: <CRITICAL|HIGH|MEDIUM>
-Fix available: <yes-but-deferred | no>
-Compensating controls: <list, cross-ref §5>
+Reason: Present only in the kernel-headers package (UAPI headers, build-time
+        artifact). No executable kernel code ships in the container; the flaw
+        affects the host-provided running kernel, which is patched via node OS
+        lifecycle. Not reachable from within the container runtime.
 Reviewed by: <name>
 Review date: <YYYY-MM-DD>
-Next review: <YYYY-MM-DD (review date + 90 days)>
+Next review: <YYYY-MM-DD + 90 days>
 ```
 
-**Pre-filled example** for the kernel-header class, should any reappear:
-
 ```
-CVE: CVE-2026-XXXXX
+CVE: CVE-2026-11586
 Status: Risk Accepted
-Reason: linux-libc-dev kernel-header CVE. Container runs on host kernel; the
-        vulnerable code path is not present in the container's userland runtime.
-        Header package retained only if a build dependency requires it.
-Component: linux-libc-dev@6.1.38-4
-Severity: HIGH
-Fix available: no (Debian, at scan time)
-Compensating controls: seccomp default profile, non-root user, read-only rootfs
+Reason: curl WebSocket PING flood DoS. Application does not use libcurl
+        WebSocket functionality; no external curl invocation in request path.
+        NO FIX currently published by Red Hat for UBI9. Compensating controls
+        (network policy, resource limits) in place. Will remove curl-minimal
+        in next image revision.
 Reviewed by: <name>
 Review date: <YYYY-MM-DD>
-Next review: <+90 days>
+Next review: <YYYY-MM-DD + 90 days>
 ```
+
+```
+CVE: CVE-2026-44172
+Status: Risk Accepted
+Reason: mariadb-connector-c SQL injection via improper escaping. Application
+        does not link against or use the MariaDB client at runtime; package
+        present transitively only. Scheduled for removal. If DB access is added,
+        this acceptance is VOID and parameterized queries become mandatory.
+Reviewed by: <name>
+Review date: <YYYY-MM-DD>
+Next review: <YYYY-MM-DD + 90 days>
+```
+
+> **Template (copy per CVE):**
+> ```
+> CVE: <ID>
+> Status: Risk Accepted
+> Reason: <why this is acceptable in this deployment>
+> Reviewed by: <name>
+> Review date: <date>
+> Next review: <date + 90 days>
+> ```
 
 ---
 
-## 5. Residual Risk Guidance & Compensating Controls
+## 5. Residual Risk Guidance — Compensating Controls
 
-Although the image is clean **today**, the golden base is a **rolling tag** (`latest-dev`) and the deployment should assume future CVEs will surface. Apply defense-in-depth:
+Because several residual HIGH CVEs have **NO FIX** available, apply defense-in-depth. The most effective single action is **shrinking the runtime attack surface** by removing unneeded packages.
 
-### 5.1 Base image hygiene (highest leverage)
-- **Pin by digest**, not `latest-dev`, in production: `cgr.dev/chainguard/python@sha256:...`. Promote new digests through CI after rescan.
-- **Rescan on a schedule** (daily Trivy in CI/registry) — the value of a rolling minimal base only materializes if you rebuild regularly.
-- Consider the **non-`-dev` variant** for the final runtime if the app does not need a shell/package manager at runtime — it removes even more surface than `latest-dev`.
+### 5.1 Image hardening (eliminate residual CVEs at source)
 
-### 5.2 Runtime hardening (Kubernetes `securityContext`)
+```dockerfile
+# Final runtime stage — strip build-time & unused packages
+RUN microdnf -y remove \
+        kernel-headers \
+        vim-minimal vim-filesystem \
+        libcurl-devel \
+        mariadb-connector-c-devel \
+        libpng-devel \
+    && pip uninstall -y setuptools wheel || true \
+    && microdnf clean all
+```
+Removing `kernel-headers`, `vim-*`, `*-devel`, and `setuptools`/`wheel` from the **runtime** layer alone is expected to clear the majority of the 93 remaining HIGH findings, since kernel-headers dominates the residual set.
+
+### 5.2 Kubernetes Pod hardening
+
 ```yaml
 securityContext:
-  runAsNonRoot: true
-  runAsUser: 65532            # Chainguard nonroot UID
+  runAsNonUser: true            # UBI9 python-311 already runs as non-root (1001)
+  runAsUser: 1001
+  runAsGroup: 0
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
+  readOnlyRootFilesystem: true  # blocks setuptools/path-traversal write attempts
   capabilities:
     drop: ["ALL"]
   seccompProfile:
-    type: RuntimeDefault
+    type: RuntimeDefault        # or a custom profile (§5.4)
 ```
-- **`readOnlyRootFilesystem: true`** neutralizes the entire path-traversal / file-modification CVE class (e.g. the former `setuptools`, `perl-Archive-Tar`, `util-linux` mount TOCTOU findings) even if reintroduced. Mount an `emptyDir` for any writable scratch paths.
-- **`drop: ALL` capabilities** blunts privilege-escalation CVEs (the former `libcap`, `linux-pam`, kernel priv-esc classes).
 
-### 5.3 Mandatory Access Control
-- Ship a **seccomp** `RuntimeDefault` profile (above) — blocks obscure syscalls exercised by many kernel/driver CVEs.
-- Apply an **AppArmor** (or SELinux) profile restricting the container to its expected file and network footprint.
+### 5.3 Network policy (mitigate curl DoS / connector exposure)
 
-### 5.4 Network controls
-- Default-deny **NetworkPolicy**; allow only required ingress/egress:
+Restrict egress so the curl QUIC/WebSocket DoS surface and DB-connector paths are unreachable except to explicitly required endpoints:
+
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: pr-demo-app-default-deny }
+metadata:
+  name: pr-demo-app-egress
 spec:
-  podSelector: { matchLabels: { app: pr-demo-app } }
+  podSelector:
+    matchLabels: { app: pr-demo-app }
   policyTypes: ["Ingress", "Egress"]
-  ingress: [...]   # only from the app's front door
-  egress:  [...]   # only to required services/DNS
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { role: ingress-gateway } }
+      ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { name: kube-system } }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    # Add explicit allow rules ONLY for required upstreams (e.g., DB, API).
+    # Default-deny everything else — kills unsolicited curl/QUIC egress.
 ```
-- Enforce **mTLS** via a service mesh (Istio/Linkerd) for all east-west traffic — mitigates the TLS/crypto CVE class (former OpenSSL/GnuTLS/krb5 findings) by constraining who can even initiate a TLS handshake.
 
-### 5.5 Supply-chain assurance
-- Generate and store an **SBOM** at build; sign the image (**cosign**) and enforce signature verification at admission.
-- Gate deployments on a **Trivy policy**: fail build on any new CRITICAL/HIGH with a fix available.
+### 5.4 mTLS enforcement (service mesh)
+
+- Enforce **STRICT mTLS** (Istio `PeerAuthentication` / Linkerd) so the container never terminates untrusted TLS/HTTP directly — the OpenSSL/gnutls/curl parsing surfaces are only reached via mesh-authenticated peers.
+```yaml
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata: { name: pr-demo-app-mtls }
+spec:
+  selector: { matchLabels: { app: pr-demo-app } }
+  mtls: { mode: STRICT }
+```
+
+### 5.5 seccomp / AppArmor
+
+- **seccomp:** start with `RuntimeDefault`; for tighter control, generate a custom profile from observed syscalls (e.g., via `oci-seccomp-bpf-hook` or `harpoon`) to block `ptrace`, `mount`, `keyctl`, and other vectors referenced by the kernel-class CVEs.
+- **AppArmor:** apply a profile denying write to `/usr`, `/etc`, and execution of shells/interpreters not required by the app (`localhost/pr-demo-app-profile`), directly countering the setuptools path-traversal and vim code-exec classes.
+
+### 5.6 Ongoing process
+
+1. **Re-scan on every rebuild** and after each UBI9 base refresh — Red Hat backports frequently flip `NO FIX` → fixed.
+2. **90-day review cadence** on all accepted CVEs (§4).
+3. **Revisit the minimal-base goal:** investigate the Chainguard smoke-test exit-1 (likely a glibc↔musl / missing-shared-lib mismatch). A working minimal base would drive counts toward **0/0** and is the recommended long-term target.
 
 ---
 
-### Appendix — Remediation trail summary
-- **1740** findings resolved · **0** still present · **0** newly introduced
-- Effective path: `os-patch` (22→6 CRIT) → `restructure` to multi-stage with Chainguard runtime (→0)
-- Final base artifact: `cgr.dev/chainguard/python:latest-dev` *(pin to digest for production)*
+*Report generated for the `optimized_app` remediation run. Final artifact: `ghcr.io/sgrsaga/pr-demo-app:v1-optimized-app` on `registry.access.redhat.com/ubi9/python-311`.*

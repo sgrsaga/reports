@@ -6,115 +6,111 @@
 
 # Container Security Remediation Summary
 
-**Image:** `ghcr.io/sgrsaga/nodejs-app:v1` → `ghcr.io/sgrsaga/nodejs-app:v1-golden-base-app`
-**Final Status:** `golden_base_app`
-**Iterations Run:** 1
-**Base Artifact:** `cgr.dev/chainguard/node:latest` (published as `ghcr.io/sgrsaga/node:latest-golden-base`)
+**Image:** `ghcr.io/sgrsaga/nodejs-app`
+**Original tag:** `v1` → **Final tag:** `v1-golden-base-app`
+**Status:** `golden_base_app` ✅
+**Iterations run:** 1 (3 discrete remediation steps)
+**Base artifact:** `cgr.dev/chainguard/node:latest` → published as `ghcr.io/sgrsaga/node:latest-golden-base`
 
 ---
 
 ## 1. Executive Summary
 
-| Metric | Before | After | Change |
-|--------|--------|-------|--------|
-| **Overall Risk Rating** | **CRITICAL** | **NONE** | ✅ Fully remediated |
-| Critical CVEs | 7 | 0 | −7 |
-| High CVEs | 83 | 0 | −83 |
-| **Total** | **90** | **0** | **−90 (100%)** |
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| **Overall risk rating** | **CRITICAL** | **PASS / Minimal** | ▼ |
+| Total findings | 90 | 0 | **−90 (100%)** |
+| CRITICAL | 7 | 0 | −7 |
+| HIGH | 83 | 0 | −83 |
+| MEDIUM | 0 | 0 | 0 |
 
-The original `nodejs-app:v1` image carried an **overall risk rating of CRITICAL**, driven by 7 CRITICAL and 83 HIGH severity findings. A significant portion of these findings were unfixable at the OS layer on the incumbent Debian 12 (bookworm) base — notably the `util-linux` TOCTOU/mount family (`CVE-2026-53613`, `-76642`, `-78408/09/10`), `perl-base` regex/Archive-Tar defects, `ncurses`, `gzip`, `libacl1`, and `libsystemd0` — meaning package-level patching alone could not clear them.
+The image began in a **Critical** posture: 7 CRITICAL and 83 HIGH findings, dominated by unfixable Debian 12 (`bookworm`) OS-level CVEs (util-linux, ncurses, perl-base, systemd, gzip, libacl1) and a cluster of application-level Node.js dependency CVEs (`tar`, `minimatch`, `brace-expansion`, `glob`, `cross-spawn`, `sigstore`, `pacote`, `ip-address`).
 
-The automated remediation escalated from OS patching to a **base image swap** to Chainguard's minimal, distroless-style `node` image. This **eliminated 100% of findings**, reducing the image to a clean scan of **0 CRITICAL / 0 HIGH**. **No residual risk remains** from a scanner perspective, and **no new CVEs were introduced** by the swap. The final image now achieves `golden_base_app` status.
+Remediation achieved a **complete elimination of all 90 findings**. The decisive action was a **base image swap** from the Debian-based Node runtime to the distroless, minimal-CVE **Chainguard Node** image. This removed the entire Debian package surface (including the many `NO FIX` OS CVEs that a package upgrade could never resolve) and shipped current, patched versions of the bundled Node tooling.
 
-> ⚠️ **Note:** The residual-risk, acceptance, and compensating-control sections below are retained as **standing guidance** for future scan cycles, since a `:latest` base tag will accrue new CVEs over time and re-open remediation obligations.
+**What remains:** Nothing in the current scan. However, "zero findings" reflects a point-in-time scan against a rolling `:latest` base. The residual risk is **operational, not static** — the pinned base must be re-pulled, re-scanned, and re-published on a cadence, since new CVEs will be disclosed against even minimal images over time.
 
 ---
 
 ## 2. What Changed
 
-The reduction was achieved in **1 iteration** comprising **3 validated steps**. Every step was gated by a full image rebuild, the application's own test suite, and a Trivy rescan; non-improving steps were rolled back but retained as adjudication candidates.
+The reduction was achieved through a **single automated iteration containing three validated steps**. Each step was gated by a full rebuild + the application's own test suite + a Trivy rescan; non-improving steps were rolled back but retained as adjudication candidates.
 
-| Step | Strategy | Action | Result (C, H) | Verdict |
-|------|----------|--------|---------------|---------|
-| 1 | `os-patch` | Debian blanket upgrade in base stage | (7, 83) → (5, 71) | ✅ Kept (−14) |
-| 2 | `os-patch` | Second Debian blanket upgrade | (5, 71) → (5, 71) | ↩️ Rolled back (no improvement) |
-| 3 | `llm-base` | Base swap to `cgr.dev/chainguard/node:latest` | (5, 71) → (0, 0) | ✅ Kept (−76) |
+| Step | Technique | Result | (CRITICAL, HIGH) |
+|------|-----------|--------|------------------|
+| 1 | `os-patch` — Debian blanket `apt-get upgrade` in base stage | ✅ passed | (7, 83) → (5, 71) |
+| 2 | `os-patch` — repeated Debian blanket upgrade | ⏹ no improvement (rolled back) | (5, 71) → (5, 71) |
+| 3 | `llm-base` — swap base to `cgr.dev/chainguard/node:latest` | ✅ passed | (5, 71) → **(0, 0)** |
 
 **Plain-language account:**
 
-1. **OS package upgrade (partial win).** The first pass ran a distribution-wide `apt` upgrade against the Debian base. This cleared 14 findings — chiefly the fixable `libgnutls30`, `libpam*`, `libcap2`, `gpgv`, `cross-spawn`, and `perl` (`CVE-2023-31484`) CVEs that had published fix versions. It could **not** touch the large cluster of `NO FIX` OS CVEs.
+1. **OS package upgrade (partial win).** A blanket Debian upgrade cleared the CVEs that *had* fix versions available in the `bookworm` repositories — e.g. `libgnutls30` (→ `3.7.9-2+deb12u7`), `libpam*` (→ `1.5.2-6+deb12u2`), `libcap2` (→ `1:2.66-4+deb12u3`), `gpgv` (→ `2.2.40-1.1+deb12u2`). This knocked out 2 CRITICAL and 12 HIGH findings but **left every `NO FIX` OS CVE untouched** (util-linux family, perl-base, ncurses, systemd libs, gzip, libacl1, zlib1g).
+2. **Second upgrade attempt (no-op).** A repeated upgrade produced no further improvement, confirming the Debian package repositories had no additional fixes to offer. Rolled back.
+3. **Base image swap (decisive win).** Rebasing onto **Chainguard's distroless Node image** eliminated the remaining findings entirely by:
+   - **Removing the Debian userland** — the entire `util-linux`, `ncurses`, `perl-base`, `systemd`, `bsdutils`, `mount`, `gzip`, `libacl1` surface no longer ships in the image, so all their `NO FIX` CVEs vanish.
+   - **Shipping current Node tooling** — the bundled/global npm packages (`tar`, `minimatch`, `brace-expansion`, `glob`, `cross-spawn`, `sigstore`, `pacote`, `ip-address`) arrive at patched versions.
 
-2. **OS package upgrade (redundant).** A second blanket upgrade produced no delta — the remaining OS CVEs had no available fixed packages in the Debian tree. This step was **rolled back** to avoid layer bloat while being retained for audit.
-
-3. **Base image swap (decisive win).** The remediation engine replaced the Debian base with the Chainguard minimal `node` image. Chainguard images are built on a hardened, minimal userland (Wolfi) that **does not ship** the vulnerable `util-linux`, `perl-base`, `ncurses`, `gzip`, `libacl1`, or `libsystemd0` packages, and rebuilds first-party Node.js tooling (`tar`, `minimatch`, `brace-expansion`, `glob`, `cross-spawn`, `sigstore`, `pacote`, `ip-address`) against current, patched releases. This removed the entire remaining surface of 76 findings.
-
-The dependency-level Node CVEs (e.g., the `tar` family `CVE-2026-59873/23745/…`, `minimatch`, `brace-expansion`, `sigstore`) were resolved because the swapped base ships patched versions of these packages in its bundled npm toolchain; no separate `package.json` bump was required in this run.
+**Net:** 90 → 0 in one iteration. The winning strategy was **surface reduction via base swap**, not incremental patching.
 
 ---
 
 ## 3. Remaining Risk Breakdown
 
-**Current residual findings: 0 (CRITICAL: 0, HIGH: 0).**
+**Current scan: 0 findings.** There are no OS-package, compiled-in, or application-level CVEs present in `v1-golden-base-app`.
 
-There are **no OS packages with unfixed CVEs** and **no application-level CVEs** remaining in the final image. All 90 original findings are resolved; none are still present; none newly introduced.
+Because there is nothing to remediate today, this section instead documents the **structural risks introduced by the chosen remediation** and the classes of CVE to watch for in future scans.
 
-The following table documents the **classes of risk that were remediated by the base swap** rather than by an upstream fix — this is important for forward-looking triage, because these classes are the ones most likely to reappear if the image reverts to a full Debian base or if the `:latest` tag drifts.
+### 3.1 OS packages with no fix available yet
+- **None present.** The base swap removed the Debian userland entirely. The previous `NO FIX` cluster is listed here for the historical record — these are no longer in the image and require **no action**:
 
-### 3.1 OS packages that had *no fix available* (resolved by base swap, not by patch)
+| CVE(s) | Component (removed) | Prior status |
+|--------|--------------------|--------------|
+| `CVE-2026-53613`, `CVE-2026-76642`, `CVE-2026-78408/9/10` | util-linux family (`mount`, `libmount1`, `libblkid1`, `libuuid1`, `libsmartcols1`, `bsdutils`, `util-linux`, `util-linux-extra`) | NO FIX → removed |
+| `CVE-2025-69720` | ncurses (`libtinfo6`, `ncurses-base`, `ncurses-bin`) | NO FIX → removed |
+| `CVE-2026-16742` | systemd (`libsystemd0`, `libudev1`) | NO FIX → removed |
+| `CVE-2026-13221`, `-42496`, `-8376`, `-42497`, `-48962`, `-57432`, `-57433`, `-9538` | perl-base | NO FIX → removed |
+| `CVE-2026-41992` | gzip | NO FIX → removed |
+| `CVE-2026-54369` | libacl1 | NO FIX → removed |
+| `CVE-2023-45853` | zlib1g | NO FIX → removed |
 
-| Package family | Representative CVEs | Why unfixable on Debian | How resolved |
-|----------------|--------------------|-------------------------|--------------|
-| `util-linux` / `libmount1` / `libblkid1` / `libuuid1` / `libsmartcols1` / `mount` / `bsdutils` | `CVE-2026-53613`, `CVE-2026-76642`, `CVE-2026-78408/09/10` | No Debian fixed package published | Package family **not present** in Chainguard minimal base |
-| `perl-base` | `CVE-2026-13221`, `CVE-2026-42496`, `CVE-2026-8376`, `CVE-2026-42497`, `CVE-2026-48962`, `CVE-2026-57432/33`, `CVE-2026-9538` | No Debian fix | Perl **not present** in minimal Node base |
-| `ncurses` (`libtinfo6`, `ncurses-base/bin`) | `CVE-2025-69720` | No Debian fix | Not present |
-| `gzip` | `CVE-2026-41992` | No Debian fix | Not present / rebuilt |
-| `libacl1` | `CVE-2026-54369` | No Debian fix | Not present |
-| `libsystemd0` / `libudev1` | `CVE-2026-16742` | No Debian fix | systemd **not present** in distroless base |
-| `zlib1g` | `CVE-2023-45853` | No Debian fix | Rebuilt against patched zlib |
+### 3.2 Compiled-in / application-level CVEs
+- **None present.** The Node dependency CVEs (`tar`, `minimatch`, `brace-expansion`, `glob`, `cross-spawn`, `ip-address`, `sigstore`, `pacote`) were resolved via the current tooling shipped in the Chainguard base.
 
-### 3.2 Application / compiled-in CVEs (resolved by upstream-patched base toolchain)
+**Forward-looking remediation guidance** (for when future rescans surface new items):
 
-These required an upstream release or dependency bump — delivered via the base image's refreshed npm toolchain:
-
-| Package | CVEs | Remediation guidance (for future recurrence) |
-|---------|------|----------------------------------------------|
-| `tar` (node-tar) | `CVE-2026-59873/59874`, `-23745`, `-23950`, `-24842`, `-26960`, `-29786`, `-31802`, `-73566` | Pin `tar >= 7.5.21` |
-| `minimatch` | `CVE-2026-26996/27903/27904` | Pin `minimatch >= 10.2.3` |
-| `brace-expansion` | `CVE-2026-13149/14257/69152` | Pin `>= 5.0.9` (or backport line ≥ 2.1.4) |
-| `glob` | `CVE-2025-64756` | Pin `glob >= 11.1.0` |
-| `cross-spawn` | `CVE-2024-21538` | Pin `>= 7.0.5` |
-| `sigstore` | `CVE-2026-48815` | Pin `>= 4.1.1` |
-| `pacote` | `CVE-2026-9496` | Pin `>= 21.5.1` |
-| `ip-address` | `CVE-2026-69192` | Pin `>= 10.3.1` |
-
-**Guidance:** Keep these as `overrides`/`resolutions` in `package.json` so that a future base regression cannot silently reintroduce an old, vulnerable transitive version.
+| Risk class | If it reappears, remediate by… |
+|------------|-------------------------------|
+| Chainguard base OS CVE | Re-pull `cgr.dev/chainguard/node:latest`, rebuild, rescan. Chainguard rebuilds continuously; a fresh pull is usually the fix. Consider `-fips`/`-dev` variants only if functionally required. |
+| Bundled Node global tool CVE (`npm`, `tar`, `pacote`, etc.) | Bump the base tag; these travel with the image. Do not vendor older copies. |
+| **Application `package.json` dependency CVE** | Pin and upgrade in the app manifest (`npm audit fix`, or explicit `overrides`), commit lockfile, rebuild. This is *not* solved by the base swap. |
 
 ---
 
 ## 4. Risk Acceptance Template
 
-No CVEs currently require acceptance. Retain the following template for any future finding a team elects to accept rather than remediate (e.g., a `NO FIX` OS CVE that reappears with a subsequent base change):
+No CVEs currently require acceptance. Retain this template for any finding a future rescan surfaces that cannot be immediately remediated (e.g. a `NO FIX` upstream CVE reachable only in an unused code path).
 
 ```
 CVE: <ID>
 Status: Risk Accepted
-Reason: <why this is acceptable in this deployment — e.g., vulnerable code path
-         not reachable; component not invoked at runtime; exploit requires local
-         privileged access not available in the pod security context>
-Reviewed by: <name / security team>
+Reason: <why this is acceptable in this deployment — e.g. vulnerable code path
+         is unreachable; component not exposed to untrusted input; compensating
+         control X in place; no upstream fix and severity mitigated by runtime
+         hardening>
+Reviewed by: <name / security owner>
 Review date: <YYYY-MM-DD>
-Next review: <YYYY-MM-DD (review date + 90 days)>
+Next review: <YYYY-MM-DD + 90 days>
 ```
 
-**Worked example (illustrative only — not currently active):**
+Example (illustrative — not currently applicable):
 
 ```
-CVE: CVE-2026-53613
+CVE: CVE-XXXX-XXXXX
 Status: Risk Accepted
-Reason: util-linux mount TOCTOU requires local mount privileges; container runs
-        as non-root with a read-only rootfs and no CAP_SYS_ADMIN, so the mount
-        helper is not invokable. Not present in current base image.
-Reviewed by: Container Security Team
+Reason: NO FIX from upstream. Affected binary (mount) is not invoked by the
+        workload; container runs read-only and non-root, eliminating the
+        privilege-escalation vector. Reachability confirmed unexploitable.
+Reviewed by: A. Engineer (Container Security)
 Review date: 2026-01-15
 Next review: 2026-04-15
 ```
@@ -123,14 +119,14 @@ Next review: 2026-04-15
 
 ## 5. Residual Risk Guidance — Compensating Controls
 
-Although the current scan is clean, the following controls should be enforced as **defense-in-depth** and as **standing mitigations** for any residual OS/app CVE that reappears (especially the `NO FIX` classes above). Apply at the Kubernetes/runtime layer regardless of scan state.
+Even at 0 findings, apply defense-in-depth. These controls harden the workload against **future** CVEs disclosed between rescans and against classes of attack (path traversal, TOCTOU, privilege escalation) that dominated the original finding set.
 
-### 5.1 Pod Security Context (read-only FS, non-root, dropped caps)
+### 5.1 Runtime hardening (Pod/container spec)
 
 ```yaml
 securityContext:
   runAsNonRoot: true
-  runAsUser: 65532          # Chainguard nonroot UID
+  runAsUser: 65532            # Chainguard 'nonroot' UID
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   capabilities:
@@ -139,62 +135,69 @@ securityContext:
     type: RuntimeDefault
 ```
 
-- **`readOnlyRootFilesystem: true`** neutralizes the `tar`/`node-tar` arbitrary-file-overwrite and path-traversal class (`CVE-2026-23745`, `-24842`, `-26960`, `-29786`, `-31802`) by removing writable target surfaces.
-- **`drop: ["ALL"]` + `allowPrivilegeEscalation: false`** removes `CAP_SYS_ADMIN`/`CAP_DAC_OVERRIDE`, defeating the `util-linux` mount TOCTOU and `libcap`/`libacl1` privilege-escalation classes.
-- **`runAsNonRoot`** contains the `libsystemd0`/systemd-homed and PAM directory-traversal escalation paths.
+| Control | Mitigates | Notes |
+|---------|-----------|-------|
+| `readOnlyRootFilesystem: true` | File-overwrite / arbitrary-write CVEs (the `tar`, `perl-Archive-Tar`, util-linux TOCTOU classes) | Mount `emptyDir` for any writable temp paths the app needs. |
+| `runAsNonRoot` + `runAsUser: 65532` | Privilege-escalation CVEs (`libcap`, PAM, systemd-homed) | Chainguard images ship a `nonroot` user by default. |
+| `capabilities: drop: [ALL]` | Mount/namespace abuse (`nsenter`, bind-mount CVEs) | Add back only explicitly required caps (usually none). |
+| `allowPrivilegeEscalation: false` | setuid/TOCTOU escalation | Blocks `no_new_privs` bypass. |
+| `seccompProfile: RuntimeDefault` | Kernel attack surface | Consider a tighter custom profile once syscall set is profiled. |
 
-### 5.2 seccomp / AppArmor
+### 5.2 AppArmor / seccomp
+- Enforce `RuntimeDefault` seccomp cluster-wide via admission policy.
+- Where AppArmor is available, apply a `runtime/default` or workload-tailored profile:
+  ```yaml
+  metadata:
+    annotations:
+      container.apparmor.security.beta.kubernetes.io/<container>: runtime/default
+  ```
 
-- Enforce `seccompProfile: RuntimeDefault` (above) to block the `mount`, `nsenter`, and namespace-manipulation syscalls central to the `util-linux` CVE family.
-- Apply an AppArmor profile denying write to `/`, `/etc`, `/usr`, and mount operations:
+### 5.3 Network policy (default-deny)
+- Distroless images have no shell, but a compromised process can still make outbound calls (relevant to the `CPAN.pm` / `sigstore` cert-validation class of CVE). Enforce egress restriction:
+  ```yaml
+  apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    name: nodejs-app-default-deny
+  spec:
+    podSelector:
+      matchLabels: { app: nodejs-app }
+    policyTypes: ["Ingress", "Egress"]
+    ingress:
+      - from:
+          - podSelector: { matchLabels: { role: gateway } }
+    egress:
+      - to:
+          - namespaceSelector: { matchLabels: { name: platform } }
+        ports:
+          - { protocol: TCP, port: 443 }
+  ```
 
-```yaml
-metadata:
-  annotations:
-    container.apparmor.security.beta.kubernetes.io/app: runtime/default
-```
+### 5.4 mTLS enforcement
+- Enforce service-mesh mTLS (Istio `PeerAuthentication: STRICT` or Linkerd default) so all pod-to-pod traffic is mutually authenticated and encrypted — directly compensating for the GnuTLS/authentication-bypass class of CVE.
+  ```yaml
+  apiVersion: security.istio.io/v1
+  kind: PeerAuthentication
+  metadata: { name: default }
+  spec:
+    mtls: { mode: STRICT }
+  ```
 
-### 5.3 Network Policy (default-deny + explicit egress)
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: nodejs-app-default-deny
-spec:
-  podSelector:
-    matchLabels: { app: nodejs-app }
-  policyTypes: [Ingress, Egress]
-  ingress:
-    - from:
-        - podSelector: { matchLabels: { role: gateway } }
-  egress:
-    - to:
-        - namespaceSelector: { matchLabels: { name: platform } }
-      ports:
-        - { protocol: TCP, port: 443 }
-```
-
-- Restricts the DoS blast radius of the GnuTLS/DTLS (`CVE-2026-42009/42010/33845`) and `ip-address` parsing (`CVE-2026-69192`) classes by limiting who can reach the service and where it can egress.
-
-### 5.4 mTLS Enforcement (service mesh)
-
-- Enforce **strict mTLS** (Istio `PeerAuthentication: STRICT` or Linkerd default) so that the GnuTLS certificate-validation / authentication-bypass class (`CVE-2026-42010`, `CVE-2025-32988/32990`, `CVE-2026-48815` sigstore trust) is mitigated by the mesh's separate, independently-patched TLS stack rather than the app's linked library.
-
-```yaml
-apiVersion: security.istio.io/v1
-kind: PeerAuthentication
-metadata: { name: default }
-spec:
-  mtls: { mode: STRICT }
-```
-
-### 5.5 Ongoing hardening for the `:latest` base
-
-- **Pin by digest**, not tag: replace `cgr.dev/chainguard/node:latest` with `cgr.dev/chainguard/node@sha256:<digest>` in the golden base to make rebuilds reproducible and prevent silent drift.
-- **Schedule a recurring rescan** (e.g., nightly Trivy) against the published `ghcr.io/sgrsaga/node:latest-golden-base` so newly-disclosed CVEs against the `:latest` base are caught before they propagate to app images.
-- **Enforce `resolutions`** for the Node dependency CVEs in §3.2 to prevent transitive regression.
+### 5.5 Supply-chain & operational controls
+- **Pin the base by digest**, not `:latest`, in production manifests; promote the digest through CI after rescan. `:latest` is acceptable at build time for freshness but must be resolved to an immutable digest for deployment.
+- **Schedule recurring rescans** (e.g. daily Trivy against the deployed digest) so newly disclosed CVEs against the Chainguard base are caught even without a rebuild.
+- **Auto-rebuild cadence**: rebuild + rescan + republish the golden base weekly to absorb upstream Chainguard patches.
+- **Sign & verify** the golden base (`ghcr.io/sgrsaga/node:latest-golden-base`) with Cosign; enforce signature verification at admission.
 
 ---
 
-*Report generated for the `golden_base_app` remediation run. Final image is scan-clean (0/0); all guidance above is retained for forward-looking risk management.*
+### Sign-off
+
+| Field | Value |
+|-------|-------|
+| Final image | `ghcr.io/sgrsaga/nodejs-app:v1-golden-base-app` |
+| Final base | `cgr.dev/chainguard/node:latest` (`ghcr.io/sgrsaga/node:latest-golden-base`) |
+| Findings resolved | 90 / 90 (100%) |
+| Findings remaining | 0 |
+| Newly introduced | 0 |
+| Residual posture | **Minimal (point-in-time)** — maintain via digest-pinning + scheduled rescans |
